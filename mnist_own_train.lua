@@ -109,10 +109,17 @@ testData.data = testData.data:cuda()
 
 -- Train the neural network
 function ModelAccuracy(dataset)
+	--[[local inputs = torch.CudaTensor()
+	local labels = torch.CudaTesnor()
+	inputs:resize(dataset:size()):copy(dataset.data)
+	lables:resize(dataset:size()):copy(dataset.lables)]]
+	-- this should evaluate all outputs in parallel on GPU if dataset is on GPU
+	local outputs = net:forward(dataset.data)
+
 	num_correct = 0
 	for i = 1,dataset:size() do
-		local prediction = net:forward(dataset[i][1])
-		local confidences, indices = torch.sort(prediction, true)
+		-- local prediction = net:forward(dataset[i][1])
+		local confidences, indices = torch.sort(outputs[i], true)
 		if indices[1] == dataset[i][2] then
 			num_correct = num_correct + 1
 		end
@@ -168,13 +175,17 @@ function MiniBatchSGD(dataset,testset)
 			currentError = currentError + criterion:forward(net:forward(input),target) 
 			
 			net:updateGradInput(input, criterion:updateGradInput(net.output, target))
-			net:accUpdateGradParameters(input, criterion.gradInput, currentLearningRate)
+			--net:accUpdateGradParameters(input, criterion.gradInput, currentLearningRate)
+			net:accGradParameters(input, criterion.gradInput, 1/batchSize)
 		end
+
+		net:updateParameters(currentLearningRate)
+		net:zeroGradParameters()
 	
 		end_time = os.time()
 		currentError = currentError / batchSize
 		elapsed_time = elapsed_time + os.difftime(end_time, start_time)
-		print('elapsed time:'..elapsed_time..'s')
+		print('elapsed time:'..elapsed_time..' s')
  		print(iteration..': current error = '..currentError)
 
 		if opt.accuracyOut then
