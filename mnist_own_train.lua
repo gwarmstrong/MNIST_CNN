@@ -11,19 +11,10 @@ cmd:option('-iterations', 15, 'number of iterations to train')
 cmd:option('-rate', 0.0001, 'learning rate')
 cmd:option('-out', 'model', 'model output name')
 cmd:option('-decay', 0, 'learning rate decay')
-cmd:option('-accuracyOut', 'false', 'write error and accuracy to file')
 cmd:option('-stats', '', 'a = accuracy, e = error func., ae = both')
 cmd:option('-batchSize', -1, 'size of training batches')
 
 opt = cmd:parse(arg or {})
-
-if opt.accuracyOut == 'false' then
-	opt.accuracyOut= false
-elseif opt.accuracyOut == 'true' then
-	opt.accuracyOut = true
-else
-	assert(false, 'invalid argument for -accuracyOut')
-end
 
 errorOut = false
 accuracyOut = false
@@ -43,7 +34,6 @@ end
 
 ---------------------------Data---------------------------------------
 
-
 if not paths.dirp('data/mnist.t7') then
 	
 	print '==> downloading dataset'
@@ -60,6 +50,7 @@ train_file = 'data/mnist.t7/train_32x32.t7'
 test_file = 'data/mnist.t7/test_32x32.t7'
 
 ----------------------------------------------------------------------
+
 print '==> loading dataset'
 
 trainData = torch.load(train_file,'ascii')
@@ -125,13 +116,8 @@ criterion = criterion:cuda()
 trainData.data = trainData.data:cuda()
 testData.data = testData.data:cuda()
 
-
 -- Train the neural network
 function ModelAccuracy(dataset)
-	--[[local inputs = torch.CudaTensor()
-	local labels = torch.CudaTesnor()
-	inputs:resize(dataset:size()):copy(dataset.data)
-	lables:resize(dataset:size()):copy(dataset.lables)]]
 	-- this should evaluate all outputs in parallel on GPU if dataset is on GPU
 	local outputs = net:forward(dataset.data)
 
@@ -188,7 +174,6 @@ function MiniBatchGD(dataset,testset)
 
 		start_time = os.time()
 
-
 		local shuffledIndices = torch.randperm(dataset:size(), 'torch.LongTensor') 
 		local thisBatch= shuffledIndices[{{1, batchSize}}]	
 		
@@ -198,26 +183,8 @@ function MiniBatchGD(dataset,testset)
 		
 		net:updateGradInput(inputs, criterion:updateGradInput(net.output, targets))
 		net:accUpdateGradParameters(inputs, criterion.gradInput, currentLearningRate)
-		--[[
-		-- Gradient descent step
-		for t = 1,batchSize do
-			local example = dataset[shuffledIndices[t][] -- delete the last [ if using
-			local input = example[1]
-			local target = example[2]
-			
-			currentError = currentError + criterion:forward(net:forward(input),target) 
-			
-			net:updateGradInput(input, criterion:updateGradInput(net.output, target))
-			--net:accUpdateGradParameters(input, criterion.gradInput, currentLearningRate)
-			net:accGradParameters(input, criterion.gradInput, 1/batchSize)
-		end
-
-		net:updateParameters(currentLearningRate)
-		net:zeroGradParameters()
-		]]
 
 		mid_time = os.time()
-		--currentError = currentError / batchSize
 		calc_time = calc_time + os.difftime(mid_time, start_time)
 		print('calculation time: '..calc_time..' s')
  		print(iteration..': current error = '..currentError)
@@ -226,8 +193,8 @@ function MiniBatchGD(dataset,testset)
 			accuracyFile:write(calc_time)
 			if errorOut then
 				currentError = string.format("%02f",currentError)
-				accuracyFile:write('\t'..currentError) --'\t'..currentAccuracy..'\t'..currentTestAccuracy..'\n')
-			end
+				accuracyFile:write('\t'..currentError)
+ 			end
 			if accuracyOut then
 				local currentAccuracy = ModelAccuracy(dataset)
 				local currentTestAccuracy = ModelAccuracy(testset)
@@ -259,10 +226,8 @@ function MiniBatchGD(dataset,testset)
 end
 
 -- add SGD and Gradient Descent, both slightly updated to output the errors and accuracies as specified
--- update method to specify 'calculateAccuracy' and 'toFile' so that batch/overall errors can be written without computing accuracies.
 
 MiniBatchGD(trainData,testData)	
-
 
 -- save the final model
 net:clearState()
@@ -299,5 +264,3 @@ print('Testing Correct:' .. correct, 100*correct/testData:size() .. ' % ')
 for i=1,#classes do
 	print(classes[i], 100*class_performance[i]/class_total[i] .. '%')
 end
-
-
