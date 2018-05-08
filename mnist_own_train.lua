@@ -12,6 +12,7 @@ cmd:option('-rate', 0.0001, 'learning rate')
 cmd:option('-out', 'model', 'model output name')
 cmd:option('-decay', 0, 'learning rate decay')
 cmd:option('-accuracyOut', 'false', 'write error and accuracy to file')
+cmd:option('-stats', '', 'a = accuracy, e = error func., ae = both')
 cmd:option('-batchSize', -1, 'size of training batches')
 
 opt = cmd:parse(arg or {})
@@ -24,17 +25,35 @@ else
 	assert(false, 'invalid argument for -accuracyOut')
 end
 
+errorOut = false
+accuracyOut = false
+write_out_stats = true
+if opt.stats == '' then
+	write_out_stats = false
+elseif opt.stats == 'a' then
+	accuracyOut = true
+elseif opt.stats == 'e' then
+	errorOut = true
+elseif opt.stats == 'ae' then
+	accuracyOut = true
+	errorOut = true
+else
+	assert(false, 'invalid argument for -stats')
+end
+
 ---------------------------Data---------------------------------------
 
-print '==> downloading dataset'
-
--- Here we download dataset files. 
-
-tar = 'http://torch7.s3-website-us-east-1.amazonaws.com/data/mnist.t7.tgz'
 
 if not paths.dirp('data/mnist.t7') then
-   os.execute('wget ' .. tar)
-   os.execute('tar xvf ' .. paths.basename(tar))
+	
+	print '==> downloading dataset'
+
+	-- Here we download dataset files. 
+
+	tar = 'http://torch7.s3-website-us-east-1.amazonaws.com/data/mnist.t7.tgz'
+	
+	os.execute('wget ' .. tar)
+   	os.execute('tar xvf ' .. paths.basename(tar))
 end
 
 train_file = 'data/mnist.t7/train_32x32.t7'
@@ -127,7 +146,7 @@ function ModelAccuracy(dataset)
 	return num_correct/dataset:size()
 end
 
-function MiniBatchSGD(dataset,testset)
+function MiniBatchGD(dataset,testset)
 	-- this is my customized version of nn.StochasticGradient
 	-- refactor this to update weights only after each batch is completed
 	local iteration = 1
@@ -136,13 +155,18 @@ function MiniBatchSGD(dataset,testset)
 	io.write('# CustomSGD: training\n')
 	
 	local accuracyFile 
-	if opt.accuracyOut then
+	if write_out_stats then
 		accuracyFile = assert(io.open('accuracy/acc_'..opt.out..'.tsv','w'))	
-		accuracyFile:write('time'..'\t'..'error'..'\t'..'train_accuracy'..'\t'..'test_accuracy\n')
+		accuracyFile:write('time')
+		if errorOut then
+			accuracyFile:write('\t'..'error')
+		end
+		if accuracyOut then
+			accuracyFile:write('\t'..'train_accuracy'..'\t'..'test_accuracy')
+		end
+		accuracyFile:write('\n')
 	end
 
-
-	 
 	local batchSize
 	-- Set the batch size
 	assert(opt.batchSize <= dataset:size())
@@ -152,8 +176,10 @@ function MiniBatchSGD(dataset,testset)
 		batchSize = opt.batchSize
 	end
 
+	local calc_time = 0
 	local elapsed_time = 0
 	local start_time
+	local mid_time
 	local end_time
 
 	while (opt.iterations > 0 and iteration <= opt.iterations) do
@@ -162,16 +188,23 @@ function MiniBatchSGD(dataset,testset)
 
 		start_time = os.time()
 
-		local currentError = 0
 
 		local shuffledIndices = torch.randperm(dataset:size(), 'torch.LongTensor') 
+		local thisBatch= shuffledIndices[{{1, batchSize}}]	
 		
-		-- Gradient descent step per training example
+		local inputs = dataset.data:index(1, thisBatch)
+		local targets = dataset.labels:index(1, thisBatch)	
+		local currentError = criterion:forward(net:forward(inputs),targets)
+		
+		net:updateGradInput(inputs, criterion:updateGradInput(net.output, targets))
+		net:accUpdateGradParameters(inputs, criterion.gradInput, currentLearningRate)
+		--[[
+		-- Gradient descent step
 		for t = 1,batchSize do
-			local example = dataset[shuffledIndices[t]]
+			local example = dataset[shuffledIndices[t][] -- delete the last [ if using
 			local input = example[1]
 			local target = example[2]
-
+			
 			currentError = currentError + criterion:forward(net:forward(input),target) 
 			
 			net:updateGradInput(input, criterion:updateGradInput(net.output, target))
@@ -181,31 +214,45 @@ function MiniBatchSGD(dataset,testset)
 
 		net:updateParameters(currentLearningRate)
 		net:zeroGradParameters()
-	
-		end_time = os.time()
-		currentError = currentError / batchSize
-		elapsed_time = elapsed_time + os.difftime(end_time, start_time)
-		print('elapsed time:'..elapsed_time..' s')
+		]]
+
+		mid_time = os.time()
+		--currentError = currentError / batchSize
+		calc_time = calc_time + os.difftime(mid_time, start_time)
+		print('calculation time: '..calc_time..' s')
  		print(iteration..': current error = '..currentError)
 
-		if opt.accuracyOut then
+		if write_out_stats then
+			accuracyFile:write(calc_time)
+			if errorOut then
+				currentError = string.format("%02f",currentError)
+				accuracyFile:write('\t'..currentError) --'\t'..currentAccuracy..'\t'..currentTestAccuracy..'\n')
+			end
+			if accuracyOut then
 				local currentAccuracy = ModelAccuracy(dataset)
 				local currentTestAccuracy = ModelAccuracy(testset)
 				local leadingSpaces = string.rep(' ', string.len(tostring(iteration)) + 2)
 				print(leadingSpaces..'train accuracy = '..currentAccuracy)
 				print(leadingSpaces..'test accuracy = '..currentTestAccuracy)
 				-- format outputs to string
-				currentError = string.format("%02f",currentError)
 				currentAccuracy = string.format("%02f",currentAccuracy)
 				currentTestAccuracy = string.format("%02f",currentTestAccuracy)
 				-- write accuracy and train/test error to file
-				accuracyFile:write(elapsed_time..'\t'..currentError..'\t'..currentAccuracy..'\t'..currentTestAccuracy..'\n')
+				accuracyFile:write('\t'..currentAccuracy..'\t'..currentTestAccuracy)
+			end
+			accuracyFile:write('\n')
 		end
+
+		-- torch.save('models/'..opt.out..'_' .. iteration .. '.t7', net)
 
 		iteration = iteration + 1
 		currentLearningRate = opt.rate / (1+iteration*opt.decay)
+		end_time = os.time()
+		elapsed_time = elapsed_time + os.difftime(end_time, start_time)
+		print('total time: '..elapsed_time..' s')
+		print('')
 	end
-	if opt.accuracyOut then
+	if write_out_stats then
 		accuracyFile:close()
 	end
 	
@@ -214,7 +261,7 @@ end
 -- add SGD and Gradient Descent, both slightly updated to output the errors and accuracies as specified
 -- update method to specify 'calculateAccuracy' and 'toFile' so that batch/overall errors can be written without computing accuracies.
 
-MiniBatchSGD(trainData,testData)	
+MiniBatchGD(trainData,testData)	
 
 
 -- save the final model
