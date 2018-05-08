@@ -16,6 +16,8 @@ cmd:option('-batchSize', -1, 'size of training batches')
 
 opt = cmd:parse(arg or {})
 
+----------------------File I/O Shenanigans----------------------------
+
 errorOut = false
 accuracyOut = false
 write_out_stats = true
@@ -30,6 +32,51 @@ elseif opt.stats == 'ae' then
 	errorOut = true
 else
 	assert(false, 'invalid argument for -stats')
+end
+
+function initOutFile()
+	if write_out_stats then
+		accuracyFile = assert(io.open('accuracy/acc_'..opt.out..'.tsv','w'))	
+		accuracyFile:write('time')
+		if errorOut then
+			accuracyFile:write('\t'..'error')
+		end
+		if accuracyOut then
+			accuracyFile:write('\t'..'train_accuracy'..'\t'..'test_accuracy')
+		end
+		accuracyFile:write('\n')
+
+		return accuracyFile
+	end
+end
+
+function updateOutFile(dataset, testset, currentError, iteration, calc_time)
+	if write_out_stats then
+		accuracyFile:write(calc_time)
+		if errorOut then
+			currentError = string.format("%02f",currentError)
+			accuracyFile:write('\t'..currentError)
+		end
+		if accuracyOut then
+			local currentAccuracy = ModelAccuracy(dataset)
+			local currentTestAccuracy = ModelAccuracy(testset)
+			local leadingSpaces = string.rep(' ', string.len(tostring(iteration)) + 2)
+			print(leadingSpaces..'train accuracy = '..currentAccuracy)
+			print(leadingSpaces..'test accuracy = '..currentTestAccuracy)
+			-- format outputs to string
+			currentAccuracy = string.format("%02f",currentAccuracy)
+			currentTestAccuracy = string.format("%02f",currentTestAccuracy)
+			-- write accuracy and train/test error to file
+			accuracyFile:write('\t'..currentAccuracy..'\t'..currentTestAccuracy)
+		end
+		accuracyFile:write('\n')
+	end
+end
+
+function closeOutFile()
+	if write_out_stats then
+		accuracyFile:close()
+	end
 end
 
 ---------------------------Data---------------------------------------
@@ -91,6 +138,7 @@ stdv = trainData.data:select(2,1):std()
 trainData.data:select(2,1):div(stdv)
 testData.data:select(2,1):div(stdv)
 
+-- build the neural network
 net = nn.Sequential()
 net:add(nn.SpatialConvolution(1,6,5,5))
 net:add(nn.SpatialMaxPooling(2,2,2,2))
@@ -108,6 +156,7 @@ net:add(nn.Linear(120, 84))
 net:add(nn.Threshold())
 net:add(nn.Linear(84,10))
 
+-- define error function
 criterion = nn.CrossEntropyCriterion()
 
 -- Transfer the network, criterion, and data to gpu
@@ -116,7 +165,7 @@ criterion = criterion:cuda()
 trainData.data = trainData.data:cuda()
 testData.data = testData.data:cuda()
 
--- Train the neural network
+-- function for getting the accuracy of net on the data given by dataset
 function ModelAccuracy(dataset)
 	-- this should evaluate all outputs in parallel on GPU if dataset is on GPU
 	local outputs = net:forward(dataset.data)
@@ -132,26 +181,16 @@ function ModelAccuracy(dataset)
 	return num_correct/dataset:size()
 end
 
+-- defines the mini batch gradient descent method
 function MiniBatchGD(dataset,testset)
 	-- this is my customized version of nn.StochasticGradient
 	-- refactor this to update weights only after each batch is completed
 	local iteration = 1
 	local currentLearningRate = opt.rate
 	
-	io.write('# CustomSGD: training\n')
+	io.write('# MiniBatchGD: training\n')
 	
-	local accuracyFile 
-	if write_out_stats then
-		accuracyFile = assert(io.open('accuracy/acc_'..opt.out..'.tsv','w'))	
-		accuracyFile:write('time')
-		if errorOut then
-			accuracyFile:write('\t'..'error')
-		end
-		if accuracyOut then
-			accuracyFile:write('\t'..'train_accuracy'..'\t'..'test_accuracy')
-		end
-		accuracyFile:write('\n')
-	end
+	initOutFile()
 
 	local batchSize
 	-- Set the batch size
@@ -188,45 +227,25 @@ function MiniBatchGD(dataset,testset)
 		calc_time = calc_time + os.difftime(mid_time, start_time)
 		print('calculation time: '..calc_time..' s')
  		print(iteration..': current error = '..currentError)
-
-		if write_out_stats then
-			accuracyFile:write(calc_time)
-			if errorOut then
-				currentError = string.format("%02f",currentError)
-				accuracyFile:write('\t'..currentError)
- 			end
-			if accuracyOut then
-				local currentAccuracy = ModelAccuracy(dataset)
-				local currentTestAccuracy = ModelAccuracy(testset)
-				local leadingSpaces = string.rep(' ', string.len(tostring(iteration)) + 2)
-				print(leadingSpaces..'train accuracy = '..currentAccuracy)
-				print(leadingSpaces..'test accuracy = '..currentTestAccuracy)
-				-- format outputs to string
-				currentAccuracy = string.format("%02f",currentAccuracy)
-				currentTestAccuracy = string.format("%02f",currentTestAccuracy)
-				-- write accuracy and train/test error to file
-				accuracyFile:write('\t'..currentAccuracy..'\t'..currentTestAccuracy)
-			end
-			accuracyFile:write('\n')
-		end
+				
+		updateOutFile(dataset, testset, currentError, iteration, calc_time)
 
 		-- torch.save('models/'..opt.out..'_' .. iteration .. '.t7', net)
 
 		iteration = iteration + 1
 		currentLearningRate = opt.rate / (1+iteration*opt.decay)
+
 		end_time = os.time()
 		elapsed_time = elapsed_time + os.difftime(end_time, start_time)
 		print('total time: '..elapsed_time..' s')
 		print('')
 	end
-	if write_out_stats then
-		accuracyFile:close()
-	end
+
+	closeOutFile()
 	
 end
 
--- add SGD and Gradient Descent, both slightly updated to output the errors and accuracies as specified
-
+-- Train the neural network
 MiniBatchGD(trainData,testData)	
 
 -- save the final model
@@ -234,7 +253,7 @@ net:clearState()
 torch.save('models/'.. opt.out .. '_final.t7', net)
 -- to load model, require 'cunn', then load [model].t7 file
 
-
+-- only necessary if you want to inspect the filters
 --[[ write the weights of the convolution layers to file
 file1 = io.open('filters/'..opt.out..'_first_conv_final.txt','w')
 file1:write(tostring(net.modules[1].weight))
